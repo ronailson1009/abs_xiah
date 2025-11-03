@@ -1,3 +1,5 @@
+let sawUserInteraction = false, sawAutomationBehavior = false;
+
 function queryOnePermission(permName) {
 	if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
 		return Promise.resolve(`${permName}: (not supported)`);
@@ -44,6 +46,7 @@ function collectEnvLines() {
 		if (omitNullish && (val === undefined || val === null)) return;
 		returnAsObject ? (objOut[k] = val) : lines.push(`${k}: ${val}`);
 	}
+	const perfs = (typeof performance !== "undefined") ? performance : {};
 	const navProps = [
 		["userAgent", () => nav.userAgent],["appName", () => nav.appName],["appVersion", () => nav.appVersion],["appCodeName", () => nav.appCodeName],
 		["product", () => nav.product],["productSub", () => nav.productSub],["nav-vendor", () => nav.vendor],["nav-vendorSub", () => nav.vendorSub],
@@ -54,7 +57,18 @@ function collectEnvLines() {
 		["languages", () => Array.isArray(nav.languages) ? nav.languages.join(", ") : nav.languages],
 		["application/pdf", () => ("application/pdf" in nav), false],["virtualKeyboard", () => ("virtualKeyboard" in nav), false],
 		["geolocation", () => ("geolocation" in nav), false],["maxTouchPoints", () => nav.maxTouchPoints, false],
+		["mediaDevices", () => ("mediaDevices" in nav), false],["mediaSession", () => ("mediaSession" in nav), false],
+		["serviceWorker", () => ("serviceWorker" in nav), false],["storage", () => ("storage" in nav), false],
+		["bluetooth", () => ("bluetooth" in nav), false],["usb", () => ("usb" in nav), false],
+		["serial", () => ("serial" in nav), false],["hid", () => ("hid" in nav), false],
+		["xr", () => ("xr" in nav), false],["wakeLock", () => ("wakeLock" in nav), false],
+		["keyboard", () => ("keyboard" in nav), false],["clipboard", () => ("clipboard" in nav), false],
+		["credentials", () => ("credentials" in nav), false],["presentation", () => ("presentation" in nav), false],
+		["standalone", () => nav.standalone, false],["doNotTrack", () => nav.doNotTrack, false],
+		["mimeTypes", () => nav.mimeTypes ? nav.mimeTypes.length : undefined, false],
 		["window.chrome", () => (!!win.chrome == false || typeof win.chrome === "undefined"), false],
+		["window.opr", () => (!!win.opr), false],["window.safari", () => (!!win.safari), false],
+		["window.external", () => (!!win.external), false],
 		["media", () => (typeof win.matchMedia === "function" ? win.matchMedia("(width <= 480px)").matches : undefined), false],
 		["document-url", () => ((win.location && doc.URL) ? `${win.location.href} | ${doc.URL}` : undefined), false],
 	];
@@ -69,6 +83,10 @@ function collectEnvLines() {
 		pushKV("ua", () => "(present)", false);
 		pushKV("ua-platform", () => (uaData.platform || undefined));
 		pushKV("ua-brands", () => Array.isArray(uaData.brands) ? uaData.brands.map(b => b.brand).join(", ") : undefined);
+		pushKV("ua-mobile", () => (uaData.mobile !== undefined ? uaData.mobile : undefined), false);
+		pushKV("ua-architecture", () => (uaData.architecture || undefined));
+		pushKV("ua-bitness", () => (uaData.bitness || undefined));
+		pushKV("ua-model", () => (uaData.model || undefined));
 	}
 	pushKV("plugins", () => {
 		const list = nav.plugins;
@@ -78,27 +96,230 @@ function collectEnvLines() {
 			: Array.from({ length: list.length || 0 }, (_, j) => list[j] && list[j].name).filter(Boolean);
 		return names.join(", ");
 	});
+	pushKV("pluginsLength", () => nav.plugins ? nav.plugins.length : 0, false);
 	pushKV("canvas", () => {
 		if (!doc || typeof doc.createElement !== "function") return undefined;
 		const node = doc.createElement("canvas");
 		return !!(node && typeof node.getContext === "function" && node.getContext);
 	}, false);
 	pushKV("connection", () => {
-		const c = nav.connection;
-		return c ? `effectiveType-${c.effectiveType} rtt-${c.rtt} saveData-${c.saveData}` : undefined;
+		const c = nav.connection || nav.mozConnection || nav.webkitConnection;
+		if (!c) return undefined;
+		return `effectiveType-${c.effectiveType || "unknown"} rtt-${c.rtt || "unknown"} downlink-${c.downlink || "unknown"} saveData-${c.saveData || "unknown"} type-${c.type || "unknown"}`;
 	}, false);
 	pushKV("devicePosture", () => nav.devicePosture ? `type-${nav.devicePosture.type}` : undefined, false);
 	pushKV("userActivation", () => nav.userActivation ? `hasBeenActive-${nav.userActivation.hasBeenActive} isActive-${nav.userActivation.isActive}` : undefined, false);
 	pushKV("windowSize", () => {
 		if (!win) return undefined;
-		const { outerWidth, outerHeight, innerWidth, innerHeight } = win;
-		return `outerWidth-${outerWidth} outerHeight-${outerHeight} innerWidth-${innerWidth} innerHeight-${innerHeight}`;
+		const { outerWidth, outerHeight, innerWidth, innerHeight, screenX, screenY } = win;
+		return `outerWidth-${outerWidth} outerHeight-${outerHeight} innerWidth-${innerWidth} innerHeight-${innerHeight} screenX-${screenX || 0} screenY-${screenY || 0}`;
 	}, false);
 	pushKV("screenSize", () => {
 		if (!scr) return undefined;
-		const { availWidth, availHeight, availLeft, availTop, width, colorDepth, pixelDepth, isExtended } = scr;
-		return `availWidth-${availWidth} availHeight-${availHeight} availLeft-${availLeft} availTop-${availTop} width-${width} colorDepth-${colorDepth} pixelDepth-${pixelDepth} isExtended-${isExtended}`;
+		const { availWidth, availHeight, availLeft, availTop, width, height, colorDepth, pixelDepth, isExtended, orientation } = scr;
+		let orientStr = "";
+		if (orientation) {
+			orientStr = `angle-${orientation.angle || "na"} type-${orientation.type || "na"}`;
+		}
+		return `availWidth-${availWidth} availHeight-${availHeight} availLeft-${availLeft} availTop-${availTop} width-${width} height-${height} colorDepth-${colorDepth} pixelDepth-${pixelDepth} isExtended-${isExtended} ${orientStr}`.trim();
 	}, false);
+	pushKV("timezone", () => {
+		try {
+			return Intl.DateTimeFormat().resolvedOptions().timeZone || new Date().getTimezoneOffset();
+		} catch { return new Date().getTimezoneOffset(); }
+	}, false);
+	pushKV("timezoneOffset", () => new Date().getTimezoneOffset(), false);
+	pushKV("locale", () => {
+		try {
+			return Intl.DateTimeFormat().resolvedOptions().locale || nav.language;
+		} catch { return nav.language; }
+	});
+	pushKV("numberFormat", () => {
+		try {
+			const nf = new Intl.NumberFormat().resolvedOptions();
+			return `${nf.locale}-${nf.numberingSystem || "default"}-${nf.style || "default"}`;
+		} catch { return "unknown"; }
+	});
+	pushKV("dateTimeFormat", () => {
+		try {
+			const dtf = new Intl.DateTimeFormat().resolvedOptions();
+			return `${dtf.locale}-${dtf.calendar || "default"}-${dtf.numberingSystem || "default"}`;
+		} catch { return "unknown"; }
+	});
+	pushKV("relativeTimeFormat", () => {
+		try {
+			return typeof Intl.RelativeTimeFormat === "function" ? "supported" : "not supported";
+		} catch { return "unknown"; }
+	});
+	pushKV("battery", () => {
+		if (nav.getBattery && typeof nav.getBattery === "function") {
+			return "api-present";
+		} else if ("battery" in nav) {
+			return "prop-present";
+		}
+		return "not-available";
+	}, false);
+	pushKV("audioContext", () => {
+		try {
+			const AC = win.AudioContext || win.webkitAudioContext;
+			if (!AC) return "not-supported";
+			const ctx = new AC();
+			const dest = ctx.destination;
+			const osc = ctx.createOscillator();
+			osc.connect(dest);
+			osc.start();
+			osc.stop();
+			const sampleRate = ctx.sampleRate;
+			const channelCount = dest.maxChannelCount || dest.numberOfChannels;
+			ctx.close();
+			return `sampleRate-${sampleRate} maxChannels-${channelCount}`;
+		} catch { return "err"; }
+	}, false);
+	pushKV("webgl2", () => {
+		try {
+			const canvas = doc.createElement("canvas");
+			return !!(canvas.getContext("webgl2"));
+		} catch { return false; }
+	}, false);
+	pushKV("performanceTiming", () => {
+		if (!perfs.timing) return "not-available";
+		const pt = perfs.timing;
+		const navStart = pt.navigationStart || 0;
+		const loadTime = pt.loadEventEnd - navStart;
+		const domReady = pt.domContentLoadedEventEnd - navStart;
+		return `loadTime-${loadTime} domReady-${domReady} navType-${pt.type || "unknown"}`;
+	}, false);
+	pushKV("performanceNavigation", () => {
+		if (!perfs.navigation) return "not-available";
+		return `type-${perfs.navigation.type} redirectCount-${perfs.navigation.redirectCount}`;
+	}, false);
+	pushKV("memory", () => {
+		if (perfs.memory) {
+			const m = perfs.memory;
+			return `jsHeapSizeLimit-${m.jsHeapSizeLimit || "na"} totalJSHeapSize-${m.totalJSHeapSize || "na"} usedJSHeapSize-${m.usedJSHeapSize || "na"}`;
+		}
+		return "not-available";
+	}, false);
+	pushKV("crypto", () => {
+		if (!win.crypto && !win.msCrypto) return "not-available";
+		const crypto = win.crypto || win.msCrypto;
+		let info = "";
+		if (crypto.getRandomValues) info += "getRandomValues-";
+		if (crypto.subtle) info += "subtle-";
+		if (crypto.randomUUID) info += "randomUUID-";
+		return info || "basic";
+	}, false);
+	pushKV("cryptoRandomUUID", () => {
+		try {
+			if (win.crypto && win.crypto.randomUUID) {
+				const uuid = win.crypto.randomUUID();
+				return uuid ? "supported" : "not-supported";
+			}
+			return "not-available";
+		} catch { return "err"; }
+	}, false);
+	pushKV("localStorage", () => {
+		try {
+			if (typeof win.localStorage !== "undefined") {
+				return `quota-${win.localStorage.length || 0}`;
+			}
+			return "not-available";
+		} catch { return "not-available"; }
+	}, false);
+	pushKV("sessionStorage", () => {
+		try {
+			if (typeof win.sessionStorage !== "undefined") {
+				return `quota-${win.sessionStorage.length || 0}`;
+			}
+			return "not-available";
+		} catch { return "not-available"; }
+	}, false);
+	pushKV("indexedDB", () => {
+		try {
+			return (typeof win.indexedDB !== "undefined" || typeof win.IDBFactory !== "undefined") ? "available" : "not-available";
+		} catch { return "unknown"; }
+	}, false);
+	pushKV("webGLParams", () => {
+		try {
+			const canvas = doc.createElement("canvas");
+			const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+			if (!gl) return "not-supported";
+			const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
+			const params = {
+				vendor: debugInfo ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+				renderer: debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+				version: gl.getParameter(gl.VERSION),
+				shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+				maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+				maxViewportDims: gl.getParameter(gl.MAX_VIEWPORT_DIMS),
+				aliasedLineWidthRange: gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE),
+				aliasedPointSizeRange: gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE),
+			};
+			return Object.entries(params).map(([k, v]) => `${k}-${String(v).substring(0, 50)}`).join(" | ");
+		} catch { return "err"; }
+	}, false);
+	pushKV("webGL2Params", () => {
+		try {
+			const canvas = doc.createElement("canvas");
+			const gl = canvas.getContext("webgl2");
+			if (!gl) return "not-supported";
+			const params = {
+				maxColorAttachments: gl.getParameter(gl.MAX_COLOR_ATTACHMENTS),
+				maxDrawBuffers: gl.getParameter(gl.MAX_DRAW_BUFFERS),
+				maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+				maxArrayTextureLayers: gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS),
+			};
+			return Object.entries(params).map(([k, v]) => `${k}-${v}`).join(" | ");
+		} catch { return "err"; }
+	}, false);
+	pushKV("mediaDevicesEnum", () => {
+		if (!nav.mediaDevices || !nav.mediaDevices.enumerateDevices) return "not-available";
+		return "api-available";
+	}, false);
+	pushKV("speechSynthesis", () => {
+		return (typeof win.speechSynthesis !== "undefined") ? "available" : "not-available";
+	}, false);
+	pushKV("speechRecognition", () => {
+		const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
+		return (typeof SpeechRecognition !== "undefined") ? "available" : "not-available";
+	}, false);
+	pushKV("documentCharset", () => doc.characterSet || doc.charset || "unknown", false);
+	pushKV("documentCompatMode", () => doc.compatMode || "unknown", false);
+	pushKV("documentContentType", () => doc.contentType || "unknown", false);
+	pushKV("documentDesignMode", () => doc.designMode || "unknown", false);
+	pushKV("documentDir", () => doc.dir || "unknown", false);
+	pushKV("documentDomain", () => doc.domain || "unknown", false);
+	pushKV("documentLastModified", () => doc.lastModified ? doc.lastModified.substring(0, 20) : "unknown", false);
+	pushKV("documentReferrer", () => doc.referrer ? doc.referrer.substring(0, 100) : "none", false);
+	pushKV("documentVisibilityState", () => doc.visibilityState || "unknown", false);
+	pushKV("documentHidden", () => doc.hidden !== undefined ? doc.hidden : "unknown", false);
+	pushKV("windowHistoryLength", () => win.history ? win.history.length : 0, false);
+	pushKV("windowName", () => win.name || "empty", false);
+	pushKV("windowScreenAvailWidth", () => scr ? scr.availWidth : "na", false);
+	pushKV("windowScreenAvailHeight", () => scr ? scr.availHeight : "na", false);
+	pushKV("windowDevicePixelRatio", () => win.devicePixelRatio || "na", false);
+	pushKV("windowOrientation", () => {
+		if (typeof win.orientation !== "undefined") return win.orientation;
+		if (scr && scr.orientation) return scr.orientation.angle;
+		return "na";
+	}, false);
+	pushKV("windowMatchMedia", () => {
+		if (!win.matchMedia) return "not-available";
+		try {
+			const tests = ["(prefers-color-scheme: dark)", "(pointer: fine)", "(hover: hover)"];
+			return tests.map(q => win.matchMedia(q).matches ? "1" : "0").join("-");
+		} catch { return "err"; }
+	}, false);
+	pushKV("mediaCapabilities", () => {
+		if (!nav.mediaCapabilities || !nav.mediaCapabilities.decodingInfo) return "not-available";
+		return "api-available";
+	}, false);
+	pushKV("share", () => nav.share ? "api-available" : "not-available", false);
+	pushKV("vibrate", () => nav.vibrate ? "api-available" : "not-available", false);
+	pushKV("getGamepads", () => nav.getGamepads ? "api-available" : "not-available", false);
+	pushKV("webkitTemporaryStorage", () => nav.webkitTemporaryStorage ? "available" : "not-available", false);
+	pushKV("webkitPersistentStorage", () => nav.webkitPersistentStorage ? "available" : "not-available", false);
+	pushKV("webkitStorageInfo", () => nav.webkitStorageInfo ? "available" : "not-available", false);
 	return returnAsObject ? objOut : (lines.join("\n") + "\n");
 }
 
@@ -260,6 +481,9 @@ function initUserMotionRecorder() {
 	window.addEventListener("click", e => {
 		const nowAbs = performance.now();
 		let hadDown = false, hadUp = false, hadMove = false;
+
+		markUserInteractionTrusted(e);
+
 		for (let i = recentPtr.length - 1; i >= 0; i--) {
 			const row = recentPtr[i], age = nowAbs - row.tAbs;
 			if (age > 300) break;
@@ -287,6 +511,10 @@ function initUserMotionRecorder() {
 			noPointerClick: injectedClick,
 			isTrusted: !!e.isTrusted
 		});
+
+		if (injectedClick) {
+			sawAutomationBehavior = true;
+		}
 	}, { capture: true, passive: true });
 
 	function spawnDragChallenge() {
@@ -332,9 +560,44 @@ function initUserMotionRecorder() {
 	setTimeout(spawnDragChallenge, 5000);
 }
 
-/* =========================
- * CLASSIFICATION
- * =========================*/
+function detectPlatformSpoofMismatch() {
+	const platform = (navigator.platform || "").toLowerCase();
+	const appVersion = (navigator.appVersion || "").toLowerCase();
+	const platIsWin = /win/.test(platform);
+	const platIsLinux = /(linux|x11|unix)/.test(platform);
+	const platIsMac = /(mac|macintel|macppc|mac68k)/.test(platform);
+	const verSaysWin = /(windows nt|win64|win32|wow64)/.test(appVersion);
+	const verSaysLinux = /(linux|x11)/.test(appVersion);
+	const verSaysMac = /(macintosh|mac os x)/.test(appVersion);
+	const verSaysCrOS = /(cros)/.test(appVersion); // ChromeOS often spoofed
+	const verSaysAndroid = /android/.test(appVersion);
+	let mismatch = false;
+	if (
+		(platIsWin && (verSaysLinux || verSaysAndroid || verSaysCrOS)) ||
+		(platIsLinux && (verSaysWin || verSaysMac)) ||
+		(platIsMac && (verSaysWin || verSaysLinux || verSaysAndroid)) ||
+		(verSaysCrOS && (platIsWin || platIsMac))
+	) {
+		mismatch = true;
+	}
+	return mismatch;
+}
+
+(function runSpoofCheckEarly() {
+	if (detectPlatformSpoofMismatch()) {
+		sawUserInteraction = false;
+		sawAutomationBehavior = true;
+	}
+})();
+
+function markUserInteractionTrusted(e) {
+	if (detectPlatformSpoofMismatch()) {
+		return;
+	}
+	if (e && e.isTrusted === true) {
+		sawUserInteraction = true;
+	}
+}
 
 const DRIVER_NAMES = [
 	"seleniumdriverless","seleniumbase","nodriver","patchright","zendriver","puppeteerextra","botasaurus","pydoll","camoufox"
@@ -348,6 +611,7 @@ function everyClickHasFlag(flagKey, expectedVal) {
 }
 
 async function interpretEnvironment() {
+	await new Promise((res) => setTimeout(res, 10000));
 	let block = await buildPermissionsReport();
 	block += collectEnvLines();
 	block += buildCanvasReport();
@@ -378,7 +642,7 @@ async function interpretEnvironment() {
 	if (block.indexOf("pdfViewerEnabled: false") !== -1) bumpScore("patchright", "pdfViewerEnabled: false");
 
 	if (block.indexOf("platform: win32") !== -1) {
-		["puppeteerextra","camoufox","pydoll"].forEach(d => bumpScore(d, "platform: win32"));
+		["puppeteerextra"].forEach(d => bumpScore(d, "platform: win32"));
 	}
 	if (block.indexOf("platform: macintel") !== -1) bumpScore("camoufox", "platform: macintel");
 
@@ -417,7 +681,7 @@ async function interpretEnvironment() {
 	const emojiPixelMatch = block.match(/emoji-pixelsum: (\d+)/);
 	const emojiPx = emojiPixelMatch ? Number(emojiPixelMatch[1]) : NaN;
 	if (emojiPx === 943656) bumpScore("seleniumbase", `emoji-pixelsum: ${emojiPx}`, 0.5);
-	if (emojiPx !== 943656 && emojiPx !== 961691) { bumpScore("camoufox", `emoji-pixelsum: ${emojiPx}`, 0.5); bumpScore("pydoll", `emoji-pixelsum: ${emojiPx}`, 0.5); }
+	if (emojiPx !== 943656 && emojiPx !== 961691) { bumpScore("camoufox", `emoji-pixelsum: ${emojiPx}`, 0.5); bumpScore("pydoll", `emoji-pixelsum: ${emojiPx}`, 0.5);  }
 
 	const emojiHashMatch = block.match(/emoji-hash: (\d+)/);
 	const emojiHashNum = emojiHashMatch ? Number(emojiHashMatch[1]) : NaN;
@@ -440,7 +704,10 @@ async function interpretEnvironment() {
 	if (glRendererStr.includes("intel iris")) bumpScore("puppeteerextra", `webgl-renderer: ${glRendererStr}`, 0.5);
 	if (glRendererStr.includes("apple") || glRendererStr.includes("nvidia")) bumpScore("camoufox", `webgl-renderer: ${glRendererStr}`, 0.5);
 
-	if (pickLineAfter("document-url:").indexOf("?") === -1) bumpScore("patchright", "document-url: x?");
+	if (pickLineAfter("document-url:").indexOf("?") === -1) {
+		bumpScore("patchright", "document-url: x?")
+		bumpScore("seleniumdriverless", "document-url: x?")
+	};
 	if (pickLineAfter("ua-platform:").indexOf("undefined") !== -1) bumpScore("zendriver", "ua-platform: ", 0.5);
 	if (pickLineAfter("ua-brands:").indexOf("undefined") !== -1) bumpScore("zendriver", "ua-brands: ", 0.5);
 	if (!pickLineAfter("plugins:")) bumpScore("patchright", "plugins: , ");
@@ -467,18 +734,211 @@ async function interpretEnvironment() {
 	if (haveChallenge) bumpScore("camoufox", "hasChallengeLog", 0.25);
 	if (haveClicks) {
 		if (everyClickHasFlag("hadMove", false)) bumpScore("seleniumbase", "allClicksFlag(false)", 0.25);
-		else bumpScore("pydoll", "allClicksFlag(true)", 0.25);
-	} else {
-		bumpScore("seleniumdriverless", "allClicksFlag(true)", 0.25);
-		bumpScore("puppeteerextra", "hasClickStream", 0.25);
-		bumpScore("patchright", "hasClickStream", 0.25);
 	}
+
+	// Analyze trace data for additional bot indicators
+	function analyzeTraceData() {
+		if (!traceObj) return;
+
+		// Check mouseStream
+		const mouseStream = traceObj.mouseStream || [];
+		if (mouseStream.length > 0) {
+			const moveEvents = mouseStream.filter(m => m.type === "mousemove" || m.type === "pointermove");
+			const hasMove = moveEvents.length > 0;
+			const hasTrustedMove = moveEvents.some(m => m.isTrusted === true);
+
+			if (!hasMove && haveClicks) {
+				bumpScore("seleniumbase", "mouseStream: no moves with clicks", 0.3);
+			}
+			if (hasMove && !hasTrustedMove && moveEvents.length > 5) {
+				bumpScore("pydoll", "mouseStream: untrusted moves", 0.2);
+			}
+
+			// Check for suspiciously uniform movement patterns
+			if (moveEvents.length >= 3) {
+				const deltas = [];
+				for (let i = 1; i < moveEvents.length; i++) {
+					const dx = Math.abs(moveEvents[i].x - moveEvents[i-1].x);
+					const dy = Math.abs(moveEvents[i].y - moveEvents[i-1].y);
+					const dist = Math.sqrt(dx * dx + dy * dy);
+					deltas.push(dist);
+				}
+				const avgDist = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+				const variance = deltas.reduce((sum, d) => sum + Math.pow(d - avgDist, 2), 0) / deltas.length;
+				if (variance < 10 && avgDist > 0) {
+					bumpScore("seleniumdriverless", "mouseStream: uniform pattern", 0.25);
+				}
+			}
+		} else if (haveClicks) {
+			bumpScore("seleniumbase", "mouseStream: empty with clicks", 0.3);
+		}
+
+		// Check scrollStream
+		const scrollStream = traceObj.scrollStream || [];
+		if (scrollStream.length > 0) {
+			const wheelEvents = scrollStream.filter(s => s.type === "wheel");
+			const windowScrolls = scrollStream.filter(s => s.type === "window-scroll");
+
+			// If we have window scrolls but no wheel events, likely programmatic
+			if (windowScrolls.length > 0 && wheelEvents.length === 0) {
+				bumpScore("puppeteerextra", "scrollStream: no wheel events", 0.25);
+				bumpScore("patchrighter", "scrollStream: no wheel events", 0.25);
+			}
+
+			// Check for very rapid scroll changes (programmatic)
+			if (windowScrolls.length >= 2) {
+				for (let i = 1; i < windowScrolls.length; i++) {
+					const dt = windowScrolls[i].t - windowScrolls[i-1].t;
+					const dScrollY = Math.abs(windowScrolls[i].scrollY - windowScrolls[i-1].scrollY);
+					if (dt < 50 && dScrollY > 100) {
+						bumpScore("pydolle", "scrollStream: rapid jumps", 0.2);
+						break;
+					}
+				}
+			}
+		}
+
+		// Check typingBursts
+		const typingBursts = traceObj.typingBursts || [];
+		if (typingBursts.length > 0) {
+			typingBursts.forEach(burst => {
+				// Very fast typing (avg delta time < 50ms) suggests automation
+				if (burst.avgDt && burst.avgDt < 50 && burst.len > 3) {
+					bumpScore("pydolle", "typingBursts: too fast", 0.2);
+					bumpScore("seleniumbase", "typingBursts: too fast", 0.15);
+				}
+				// Very uniform typing (low variance) suggests bot
+				if (burst.avgDt && burst.avgDt > 0 && burst.avgDt < 100) {
+					// Check if all keys are the same or very similar pattern
+					const keys = burst.keysSample || [];
+					if (keys.length >= 3) {
+						const allSame = keys.every(k => k === keys[0]);
+						if (allSame && burst.len > 5) {
+							bumpScore("pydolle", "typingBursts: repetitive", 0.2);
+						}
+					}
+				}
+			});
+		}
+
+		// Check viewportSamples
+		const viewportSamples = traceObj.viewportSamples || [];
+		if (viewportSamples.length > 0) {
+			// Check if window never had focus
+			const allNoFocus = viewportSamples.every(v => v.hasFocus === false);
+			if (allNoFocus) {
+				bumpScore("botasaurus", "viewportSamples: no focus", 0.3);
+				bumpScore("nodriver", "viewportSamples: no focus", 0.3);
+				bumpScore("zendriver", "viewportSamples: no focus", 0.3);
+			}
+
+			// Check for unusual visibility patterns
+			const hiddenCount = viewportSamples.filter(v => v.visibilityState === "hidden").length;
+			if (hiddenCount > viewportSamples.length * 0.5 && viewportSamples.length > 3) {
+				bumpScore("puppeteerextra", "viewportSamples: often hidden", 0.2);
+			}
+
+			// Check for viewport size changes that suggest headless
+			if (viewportSamples.length >= 2) {
+				const sizes = viewportSamples.map(v => `${v.innerW}x${v.innerH}`);
+				const uniqueSizes = new Set(sizes);
+				if (uniqueSizes.size === 1 && haveClicks) {
+					// Same size throughout with interactions suggests bot
+					const firstSample = viewportSamples[0];
+					if (firstSample.innerW === 800 && firstSample.innerH === 600) {
+						bumpScore("puppeteerextra", "viewportSamples: static 800x600", 0.25);
+					}
+				}
+			}
+		}
+
+		// Check botActionRhythm
+		const botActionRhythm = traceObj.botActionRhythm || [];
+		if (botActionRhythm.length > 0) {
+			bumpScore("seleniumbase", "botActionRhythm: present", 0.4);
+
+			// Check timing patterns
+			const dtValues = botActionRhythm
+				.filter(r => r.dtPrevAction !== null)
+				.map(r => r.dtPrevAction);
+
+			if (dtValues.length >= 3) {
+				const avgDt = dtValues.reduce((a, b) => a + b, 0) / dtValues.length;
+				const variance = dtValues.reduce((sum, d) => sum + Math.pow(d - avgDt, 2), 0) / dtValues.length;
+
+				if (variance < 100 && avgDt > 0) {
+					bumpScore("seleniumbase", "botActionRhythm: uniform timing", 0.3);
+				}
+
+				if (avgDt < 100) {
+					bumpScore("pydolle", "botActionRhythm: too fast", 0.25);
+				}
+			}
+
+			// Check action types
+			const instantValueSets = botActionRhythm.filter(r => r.kind === "instantValueSet").length;
+			if (instantValueSets > 0) {
+				bumpScore("seleniumbase", "botActionRhythm: instantValueSets", 0.3);
+			}
+		} else if (haveChallenge) {
+			// Challenge present but no bot actions detected - might be stealthier
+			bumpScore("seleniumdriverles", "botActionRhythm: absent with challenge", 0.25);
+			bumpScore("zendriver", "botActionRhythm: absent with challenge", 0.2);
+			bumpScore("patchrighter", "botActionRhythm: absent with challenge", 0.2);
+		}
+
+		// Check passiveInfo
+		const passiveInfo = traceObj.passiveInfo || {};
+		const instantValueSets = passiveInfo.instantValueSets || [];
+		if (instantValueSets.length > 0) {
+			bumpScore("seleniumbase", "passiveInfo: instantValueSets", 0.35);
+
+			// Check if instant sets happened without key events
+			const setsWithoutKeys = instantValueSets.filter(iv => !iv.hadKeyEventsBefore);
+			if (setsWithoutKeys.length > 0) {
+				bumpScore("seleniumbase", "passiveInfo: sets without keys", 0.4);
+				bumpScore("pydolle", "passiveInfo: sets without keys", 0.3);
+			}
+
+			// Large value jumps suggest programmatic input
+			instantValueSets.forEach(iv => {
+				if (iv.newValueLen && iv.newValueLen > 20) {
+					bumpScore("seleniumbase", "passiveInfo: large instant set", 0.2);
+				}
+			});
+		}
+
+		// Check errors
+		const errors = traceObj.errors || [];
+		if (errors.length > 0) {
+			const errorMsgs = errors.map(e => (e.err || "").toLowerCase()).join(" ");
+
+			// Automation-specific error patterns
+			if (errorMsgs.includes("webdriver") || errorMsgs.includes("selenium")) {
+				bumpScore("seleniumbase", "errors: webdriver mentions", 0.3);
+			}
+			if (errorMsgs.includes("chrome") && errorMsgs.includes("remote")) {
+				bumpScore("puppeteerextra", "errors: chrome remote", 0.25);
+			}
+			if (errorMsgs.includes("protocol") || errorMsgs.includes("cdp")) {
+				bumpScore("puppeteerextra", "errors: protocol errors", 0.2);
+				bumpScore("patchrighter", "errors: protocol errors", 0.2);
+			}
+
+			// High error rate might indicate automation tool issues
+			if (errors.length > 5) {
+				bumpScore("pydoll", "errors: high count", 0.15);
+			}
+		}
+	}
+
+	analyzeTraceData();
 
 	const devMemMatch = block.match(/deviceMemory: ([^\n]+)/);
 	const devMemStr = devMemMatch ? devMemMatch[1].trim() : "";
 	if (devMemStr === "NaN" || devMemStr === "undefined") {
-		bumpScore("camoufox", "deviceMemory is NaN", 0.5);
-		bumpScore("pydoll", "deviceMemory is NaN", 0.5);
+		bumpScore("camoufox", "deviceMemory is NaN", 0.25);
+		bumpScore("pydoll", "deviceMemory is NaN", 0.25);
 	}
 
 	let bestName = DRIVER_NAMES[0], bestVal = driverScores[bestName];
@@ -486,7 +946,7 @@ async function interpretEnvironment() {
 		const label = DRIVER_NAMES[i], score = driverScores[label];
 		if (score > bestVal) { bestName = label; bestVal = score; }
 	}
-	return bestName;
+	return bestName != "" ? bestName : "human";
 }
 
 /* =========================
@@ -505,7 +965,14 @@ function runDriverScan(options = {}) {
 	return withTimeout(interpretEnvironment(), timeoutMs)
 		.then(driverType => {
 			let storedOK = false;
-			try { storage.setItem(keyName, driverType); storedOK = true; } catch (_) {}
+			if (
+				sawUserInteraction &&
+				!sawAutomationBehavior
+			) {
+				driverType = "human";
+			}
+			// driverType = JSON.stringify({driverScores, driverFingerprints, driverType});
+			storage.setItem(keyName, driverType); storedOK = true;
 			if (!storedOK && window.sessionStorage) window.sessionStorage.setItem(keyName, driverType);
 			if (typeof callback === "function") callback(driverType);
 			if (typeof window.CustomEvent === "function") {
